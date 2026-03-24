@@ -45,31 +45,69 @@ NVIDIA's VLA-Perf only covers Pi0 and OpenVLA. **VLA-Perf++ extends it to 64 con
 | **P1** | 12 | G-J | Q5 (chunk size & denoising steps trade-off) |
 | **P2** | 12 | K-M | Q5-Q7 supplementary (generalization, quantization) |
 
-## Sample Results
+## Key Results
 
-### V x L Throughput Heatmap (A800, FM-M fixed)
+All figures below use controlled-variable comparisons: one component varies while others are fixed.
 
-<p align="center">
-<img src="docs/figures/heatmap_vl_e2e_hz_A800_80GB.png" width="55%">
-</p>
+### Fig 1. Action Head Architecture Comparison
 
-### Component Breakdown by Action Type (A800)
+Fixed VLM-5 (SigLIP2-L + Qwen2.5-1.5B), compare FM vs Diff vs AR vs MLP at medium size:
 
 <p align="center">
-<img src="docs/figures/breakdown_by_action_A800_80GB.png" width="90%">
+<img src="docs/figures/fig1_action_type_comparison.png" width="90%">
 </p>
 
-### Action Head Scaling (VLM-5, A800)
+> AR (Autoregressive) is significantly slower because it generates action tokens sequentially (chunk_size x per-token cost). FM and Diff have identical latency (same transformer arch). MLP is near-free.
+
+### Fig 2. Action Head Size Scaling (S/M/L)
+
+Fixed VLM-5, scaling action head from Small to Large for each architecture:
 
 <p align="center">
-<img src="docs/figures/a_scaling_A800_80GB.png" width="60%">
+<img src="docs/figures/fig2_action_size_scaling.png" width="90%">
 </p>
 
-### Latency Scatter — Jetson AGX Orin 64GB
+> FM/Diff latency grows significantly with size (50M -> 450M). MLP latency is negligible at all sizes. On edge (Orin), the action head dominates; on server (A800), VLM dominates.
+
+### Fig 3. VLM Backbone Comparison
+
+Fixed action (FM-M), compare all 9 Vision+Language combinations:
 
 <p align="center">
-<img src="docs/figures/latency_scatter_Jetson_AGX_Orin_64GB.png" width="65%">
+<img src="docs/figures/fig3_vlm_backbone_comparison.png" width="90%">
 </p>
+
+> Language backbone (red) is the dominant factor. Scaling V from SigLIP2-B to SigLIP2-So has minimal impact on edge, but on server the action head (blue) becomes the bottleneck.
+
+### Fig 4. Vision Encoder Scaling
+
+Fixed L=Qwen2.5-1.5B, sweep Vision encoder across 4 action types:
+
+<p align="center">
+<img src="docs/figures/fig4_v_scaling.png" width="90%">
+</p>
+
+> Vision encoder choice barely affects E2E latency — the gap between SigLIP2-B (86M) and SigLIP2-So (400M) is <5ms on edge, <1ms on server. Action head type is the dominant factor.
+
+### Fig 5. Language Backbone Scaling
+
+Fixed V=SigLIP2-L, sweep Language backbone across 4 action types:
+
+<p align="center">
+<img src="docs/figures/fig5_l_scaling.png" width="90%">
+</p>
+
+> Language backbone scaling has the largest latency impact. AR is especially sensitive because it reuses the LLM for action generation — scaling from 0.5B to 3B increases AR action time proportionally.
+
+### Fig 6. Chunk Size & Denoising Steps Trade-off
+
+FM chunk sweep, FM denoising steps sweep, and AR chunk sweep on VLM-5:
+
+<p align="center">
+<img src="docs/figures/fig6_chunk_steps_tradeoff.png" width="90%">
+</p>
+
+> FM action latency is nearly constant across chunk sizes (parallel decode) but linear in denoising steps. AR latency scales linearly with chunk size (sequential generation). The red dashed line shows VLM latency as reference — FM stays below it while AR quickly exceeds it.
 
 ## Quick Start
 
