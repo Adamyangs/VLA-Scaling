@@ -38,13 +38,23 @@ C_VISION = "#2EC4B6"
 C_VLM = "#E71D36"
 C_ACTION = "#3772FF"
 
+# High-contrast, colorblind-friendly palette
 ACTION_COLORS = {
-    "Cascade": "#3772FF",
-    "SharedAttn": "#FF9F1C",
-    "CrossAttn": "#9B59B6",
-    "AR-Naive": "#2EC4B6",
-    "AR-FAST": "#1ABC9C",
-    "Regress": "#E71D36",
+    "Cascade": "#E63946",     # red
+    "SharedAttn": "#457B9D",  # steel blue
+    "CrossAttn": "#F4A261",   # orange
+    "AR-Naive": "#2A9D8F",    # teal
+    "AR-FAST": "#264653",     # dark teal
+    "Regress": "#A8DADC",     # light blue
+}
+
+ACTION_MARKERS = {
+    "Cascade": "o",
+    "SharedAttn": "s",
+    "CrossAttn": "D",
+    "AR-Naive": "^",
+    "AR-FAST": "v",
+    "Regress": "P",
 }
 
 ACTION_DISPLAY = {
@@ -53,7 +63,14 @@ ACTION_DISPLAY = {
     "AR": "AR\n(shared)", "MLP-S": "MLP-S\n(10M)", "MLP-M": "MLP-M\n(30M)", "MLP-L": "MLP-L\n(80M)",
 }
 
-HW_SHORT = {"Jetson_AGX_Orin_64GB": "Orin 64GB", "A800_80GB": "A800 80GB"}
+HW_SHORT = {
+    "Jetson_AGX_Orin_64GB": "Orin 64GB",
+    "A100_80GB": "A100 80GB",
+    "A800_80GB": "A800 80GB",
+    "Jetson_AGX_Thor": "Thor",
+    "H100": "H100",
+    "RTX_4090": "RTX 4090",
+}
 
 
 def load(csv_path):
@@ -84,13 +101,15 @@ def fig1_action_type_comparison(df, output_dir):
         "AR-FAST\n(DCT+BPE\ncompressed)",
         "Direct\nRegression\n(30M MLP)",
     ]
-    systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
+    systems = sorted(df["hardware"].unique())
 
     base = filter_baseline(df)
     sub = base[(base["vision_key"] == "V-M") & (base["language_key"] == "L-M") &
                (base["action_key"].isin(action_keys))]
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5.5), sharey=False)
+    fig, axes = plt.subplots(1, len(systems), figsize=(6 * len(systems), 5.5), sharey=False)
+    if len(systems) == 1:
+        axes = [axes]
 
     for ax, hw in zip(axes, systems):
         hw_data = sub[sub["hardware"] == hw]
@@ -139,17 +158,20 @@ def fig1_action_type_comparison(df, output_dir):
 # ================================================================
 def fig2_action_size_scaling(df, output_dir):
     """Grouped bar: S/M/L for FM, Diff, MLP on VLM-5."""
-    systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
+    systems = sorted(df["hardware"].unique())
     arch_groups = [
         ("Cascade Denoise", ["Cascade-S", "Cascade-M", "Cascade-L"], ["S\n(50M)", "M\n(200M)", "L\n(450M)"]),
         ("SharedAttn Denoise", ["SharedAttn-S", "SharedAttn-M", "SharedAttn-L"], ["S\n(50M)", "M\n(200M)", "L\n(450M)"]),
         ("Direct Regression", ["Regress-S", "Regress-M", "Regress-L"], ["S\n(10M)", "M\n(30M)", "L\n(80M)"]),
     ]
 
+    systems = sorted(df["hardware"].unique())
     base = filter_baseline(df)
     sub = base[(base["vision_key"] == "V-M") & (base["language_key"] == "L-M")]
 
-    fig, axes = plt.subplots(2, 3, figsize=(16, 9), sharey="row")
+    fig, axes = plt.subplots(len(systems), 3, figsize=(16, 4.5 * len(systems)), sharey="row")
+    if len(systems) == 1:
+        axes = [axes]
 
     for col, (arch_name, keys, labels) in enumerate(arch_groups):
         for row, hw in enumerate(systems):
@@ -201,7 +223,7 @@ def fig2_action_size_scaling(df, output_dir):
 # ================================================================
 def fig3_vlm_backbone_comparison(df, output_dir):
     """Stacked bar for 9 VLMs with FM-M, showing V/L/A component ratio."""
-    systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
+    systems = sorted(df["hardware"].unique())
     sub = df[(df["action_key"] == "Cascade-M") & (df["group"] == "A")]
 
     vlm_labels = [
@@ -210,7 +232,9 @@ def fig3_vlm_backbone_comparison(df, output_dir):
         "So+0.5B", "So+1.5B", "So+3B",
     ]
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 5.5), sharey=False)
+    fig, axes = plt.subplots(1, len(systems), figsize=(5.5 * len(systems), 5.5), sharey=False)
+    if len(systems) == 1:
+        axes = [axes]
 
     for ax, hw in zip(axes, systems):
         hw_data = sub[sub["hardware"] == hw].sort_values("config_id")
@@ -259,7 +283,7 @@ def fig3_vlm_backbone_comparison(df, output_dir):
 # ================================================================
 def fig4_v_scaling(df, output_dir):
     """Line plot: V-Scaling per action type, both platforms."""
-    systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
+    systems = sorted(df["hardware"].unique())
     # Group B (V-Scaling x Diff/AR/MLP) + Group A row 2 (V-M x FM-M with L=1.5B)
     # We need FM-M with L=1.5B for all 3 V sizes → configs 2,5,8 from Group A
     action_items = [
@@ -275,7 +299,9 @@ def fig4_v_scaling(df, output_dir):
     v_order = {"V-S": 0, "V-M": 1, "V-L": 2}
     v_labels = ["SigLIP2-B\n(86M)", "SigLIP2-L\n(307M)", "SigLIP2-So\n(400M)"]
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+    fig, axes = plt.subplots(1, len(systems), figsize=(5.5 * len(systems), 5.5))
+    if len(systems) == 1:
+        axes = [axes]
 
     for ax, hw in zip(axes, systems):
         hw_data = sub[sub["hardware"] == hw]
@@ -287,8 +313,11 @@ def fig4_v_scaling(df, output_dir):
             if a_data.empty:
                 continue
 
-            ax.plot(a_data["_vx"], a_data["e2e_time_ms"],
-                    marker="o", color=ACTION_COLORS[color_key],
+            marker = ACTION_MARKERS.get(color_key, "o")
+            # Offset CrossAttn slightly so it doesn't hide behind Cascade
+            offset = 0.05 if color_key == "CrossAttn" else 0
+            ax.plot(a_data["_vx"] + offset, a_data["e2e_time_ms"],
+                    marker=marker, color=ACTION_COLORS[color_key],
                     label=ak, linewidth=2.5, markersize=8)
 
             for _, row in a_data.iterrows():
@@ -316,7 +345,7 @@ def fig4_v_scaling(df, output_dir):
 # ================================================================
 def fig5_l_scaling(df, output_dir):
     """Line plot: L-Scaling per action type, both platforms."""
-    systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
+    systems = sorted(df["hardware"].unique())
     action_items = [
         ("Cascade-M", "Cascade"), ("SharedAttn-M", "SharedAttn"),
         ("CrossAttn-M", "CrossAttn"), ("AR-Naive", "AR-Naive"),
@@ -330,7 +359,9 @@ def fig5_l_scaling(df, output_dir):
     l_order = {"L-S": 0, "L-M": 1, "L-L": 2}
     l_labels = ["Qwen2.5-0.5B", "Qwen2.5-1.5B", "Qwen2.5-3B"]
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+    fig, axes = plt.subplots(1, len(systems), figsize=(5.5 * len(systems), 5.5))
+    if len(systems) == 1:
+        axes = [axes]
 
     for ax, hw in zip(axes, systems):
         hw_data = sub[sub["hardware"] == hw]
@@ -343,9 +374,11 @@ def fig5_l_scaling(df, output_dir):
                 continue
 
             n_points = len(a_data)
-            ax.plot(a_data["_lx"], a_data["e2e_time_ms"],
-                    marker="s", color=ACTION_COLORS[color_key],
-                    label=f"{ak} ({n_points} pts)", linewidth=2.5, markersize=8)
+            marker = ACTION_MARKERS.get(color_key, "o")
+            offset = 0.03 if color_key == "CrossAttn" else 0
+            ax.plot(a_data["_lx"] + offset, a_data["e2e_time_ms"],
+                    marker=marker, color=ACTION_COLORS[color_key],
+                    label=ak, linewidth=2.5, markersize=8)
 
             for _, row in a_data.iterrows():
                 ax.annotate(f"{row['e2e_time_ms']:.1f}",
@@ -371,86 +404,88 @@ def fig5_l_scaling(df, output_dir):
 # Fig 6: Chunk size & denoising steps trade-off
 # ================================================================
 def fig6_chunk_steps_tradeoff(df, output_dir):
-    """Multi-panel: FM chunk scaling, FM steps scaling, AR chunk scaling."""
-    systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
+    """Multi-panel: Denoise chunk, Denoise steps, AR-Naive vs AR-FAST chunk."""
+    systems = sorted(df["hardware"].unique())
 
-    fig, axes = plt.subplots(2, 3, figsize=(16, 9), sharey="row")
+    fig, axes = plt.subplots(len(systems), 3, figsize=(16, 4.5 * len(systems)))
 
     for row, hw in enumerate(systems):
         hw_data = df[df["hardware"] == hw]
 
-        # Panel 1: Cascade-M chunk size sweep (Group G)
-        ax = axes[row][0]
-        fm_chunk = hw_data[hw_data["group"] == "G"].sort_values("chunk_size")
-        if not fm_chunk.empty:
-            ax.bar(range(len(fm_chunk)), fm_chunk["action_time_ms"],
-                   color=ACTION_COLORS["Cascade"], width=0.5, label="Action Head")
-            # Add VLM baseline
-            vlm_base = fm_chunk["vlm_time_ms"].iloc[0]
+        # Panel 1: Cascade-M chunk size sweep (Group G) — line plot
+        ax = axes[row][0] if len(systems) > 1 else axes[0]
+        g_data = hw_data[hw_data["group"] == "G"].sort_values("chunk_size")
+        if not g_data.empty:
+            ax.plot(g_data["chunk_size"], g_data["action_time_ms"],
+                    marker="o", color=ACTION_COLORS["Cascade"], linewidth=2, label="Action (Cascade-M)")
+            vlm_base = g_data["vlm_time_ms"].iloc[0]
             ax.axhline(y=vlm_base, color=C_VLM, linestyle="--", alpha=0.7,
-                       label=f"VLM baseline ({vlm_base:.1f}ms)")
-            ax.set_xticks(range(len(fm_chunk)))
-            ax.set_xticklabels([str(int(c)) for c in fm_chunk["chunk_size"]])
+                       label=f"VLM ({vlm_base:.1f}ms)")
+            for _, r in g_data.iterrows():
+                ax.annotate(f"{r['action_time_ms']:.1f}", (r["chunk_size"], r["action_time_ms"]),
+                            textcoords="offset points", xytext=(5, 5), fontsize=7)
+            ax.set_xscale("log")
             ax.set_xlabel("Chunk Size")
-            for i, (_, r) in enumerate(fm_chunk.iterrows()):
-                ax.text(i, r["action_time_ms"] + 0.1, f"{r['action_time_ms']:.1f}",
-                        ha="center", va="bottom", fontsize=8)
         if row == 0:
-            ax.set_title("Denoise: Chunk Size Sweep", fontsize=11, fontweight="bold")
-        ax.set_ylabel(f"{HW_SHORT[hw]}\nAction Latency (ms)")
+            ax.set_title("Denoise: Chunk Sweep", fontsize=11, fontweight="bold")
+        ax.set_ylabel(f"{HW_SHORT.get(hw, hw)}\nAction Latency (ms)")
         ax.legend(fontsize=7)
+        ax.grid(alpha=0.2)
 
-        # Panel 2: Cascade-M denoising steps sweep (Group H + default)
-        ax = axes[row][1]
-        fm_steps_g = hw_data[hw_data["group"] == "H"]
-        fm_default = hw_data[(hw_data["config_id"] == 5)]
-        fm_steps = pd.concat([fm_default, fm_steps_g]).sort_values("denoising_steps")
-        if not fm_steps.empty:
-            ax.bar(range(len(fm_steps)), fm_steps["action_time_ms"],
-                   color=ACTION_COLORS["Cascade"], width=0.5)
-            ax.axhline(y=fm_steps["vlm_time_ms"].iloc[0], color=C_VLM,
-                       linestyle="--", alpha=0.7, label=f"VLM baseline")
-            ax.set_xticks(range(len(fm_steps)))
-            ax.set_xticklabels([str(int(s)) for s in fm_steps["denoising_steps"]])
+        # Panel 2: Cascade-M steps sweep (Group H) — line plot
+        ax = axes[row][1] if len(systems) > 1 else axes[1]
+        h_data = hw_data[hw_data["group"] == "H"].sort_values("denoising_steps")
+        # Add default config (steps=10)
+        default_cascade = hw_data[(hw_data["action_key"] == "Cascade-M") &
+                                   (hw_data["group"] == "A") &
+                                   (hw_data["vision_key"] == "V-M") &
+                                   (hw_data["language_key"] == "L-M")]
+        h_all = pd.concat([default_cascade, h_data]).drop_duplicates("denoising_steps").sort_values("denoising_steps")
+        if not h_all.empty:
+            ax.plot(h_all["denoising_steps"], h_all["action_time_ms"],
+                    marker="s", color=ACTION_COLORS["Cascade"], linewidth=2, label="Action (Cascade-M)")
+            vlm_base = h_all["vlm_time_ms"].iloc[0]
+            ax.axhline(y=vlm_base, color=C_VLM, linestyle="--", alpha=0.7,
+                       label=f"VLM ({vlm_base:.1f}ms)")
+            for _, r in h_all.iterrows():
+                ax.annotate(f"{r['action_time_ms']:.1f}", (r["denoising_steps"], r["action_time_ms"]),
+                            textcoords="offset points", xytext=(5, 5), fontsize=7)
+            ax.set_xscale("log")
             ax.set_xlabel("Denoising Steps")
-            for i, (_, r) in enumerate(fm_steps.iterrows()):
-                ax.text(i, r["action_time_ms"] + 0.1, f"{r['action_time_ms']:.1f}",
-                        ha="center", va="bottom", fontsize=8)
         if row == 0:
             ax.set_title("Denoise: Steps Sweep", fontsize=11, fontweight="bold")
         ax.legend(fontsize=7)
+        ax.grid(alpha=0.2)
 
-        # Panel 3: AR-Naive vs AR-FAST chunk sweep (Group I)
-        ax = axes[row][2]
+        # Panel 3: AR-Naive vs AR-FAST chunk sweep — line plot, log-log
+        ax = axes[row][2] if len(systems) > 1 else axes[2]
         ar_i = hw_data[hw_data["group"] == "I"]
-        ar_naive_default = hw_data[(hw_data["config_id"] == 17)]
-        ar_fast_default = hw_data[(hw_data["config_id"] == 18)]
-        ar_naive = pd.concat([ar_naive_default, ar_i[ar_i["action_type"] == "ar_naive"]]).drop_duplicates("chunk_size").sort_values("chunk_size")
-        ar_fast = pd.concat([ar_fast_default, ar_i[ar_i["action_type"] == "ar_fast"]]).drop_duplicates("chunk_size").sort_values("chunk_size")
+        ar_naive = ar_i[ar_i["action_type"] == "ar_naive"].sort_values("chunk_size")
+        ar_fast = ar_i[ar_i["action_type"] == "ar_fast"].sort_values("chunk_size")
 
-        if not ar_naive.empty and not ar_fast.empty:
-            x_n = np.arange(len(ar_naive))
-            width_bar = 0.35
-            ax.bar(x_n - width_bar/2, ar_naive["action_time_ms"].values, width_bar,
-                   color=ACTION_COLORS["AR-Naive"], label="AR-Naive")
-            x_f = np.arange(len(ar_fast))
-            ax.bar(x_f + width_bar/2, ar_fast["action_time_ms"].values, width_bar,
-                   color=ACTION_COLORS["AR-FAST"], label="AR-FAST")
-            ax.axhline(y=ar_naive["vlm_time_ms"].iloc[0], color=C_VLM,
-                       linestyle="--", alpha=0.7, label="VLM baseline")
-            all_chunks = sorted(set(ar_naive["chunk_size"].tolist() + ar_fast["chunk_size"].tolist()))
-            ax.set_xticks(range(len(all_chunks)))
-            ax.set_xticklabels([str(int(c)) for c in all_chunks])
-            ax.set_xlabel("Chunk Size")
-            for i, (_, r) in enumerate(ar_naive.iterrows()):
-                ax.text(i - width_bar/2, r["action_time_ms"] + 0.3, f"{r['action_time_ms']:.0f}",
-                        ha="center", va="bottom", fontsize=7, color=ACTION_COLORS["AR-Naive"])
-            for i, (_, r) in enumerate(ar_fast.iterrows()):
-                ax.text(i + width_bar/2, r["action_time_ms"] + 0.3, f"{r['action_time_ms']:.0f}",
-                        ha="center", va="bottom", fontsize=7, color=ACTION_COLORS["AR-FAST"])
+        if not ar_naive.empty:
+            ax.plot(ar_naive["chunk_size"], ar_naive["action_time_ms"],
+                    marker="^", color=ACTION_COLORS["AR-Naive"], linewidth=2, label="AR-Naive")
+            for _, r in ar_naive.iterrows():
+                ax.annotate(f"{r['action_time_ms']:.0f}", (r["chunk_size"], r["action_time_ms"]),
+                            textcoords="offset points", xytext=(5, 5), fontsize=7)
+        if not ar_fast.empty:
+            ax.plot(ar_fast["chunk_size"], ar_fast["action_time_ms"],
+                    marker="v", color=ACTION_COLORS["AR-FAST"], linewidth=2, label="AR-FAST")
+            for _, r in ar_fast.iterrows():
+                ax.annotate(f"{r['action_time_ms']:.0f}", (r["chunk_size"], r["action_time_ms"]),
+                            textcoords="offset points", xytext=(5, -12), fontsize=7)
+        if not ar_naive.empty:
+            vlm_base = ar_naive["vlm_time_ms"].iloc[0]
+            ax.axhline(y=vlm_base, color=C_VLM, linestyle="--", alpha=0.7,
+                       label=f"VLM ({vlm_base:.1f}ms)")
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel("Chunk Size")
         if row == 0:
-            ax.set_title("AR-Naive vs AR-FAST Chunk Sweep", fontsize=11, fontweight="bold")
+            ax.set_title("AR-Naive vs AR-FAST", fontsize=11, fontweight="bold")
         ax.legend(fontsize=7)
+        ax.grid(alpha=0.2, which="both")
 
     fig.suptitle("Chunk Size & Denoising Steps Trade-off (VLM-5: SigLIP2-L + Qwen2.5-1.5B)",
                  fontsize=14, fontweight="bold", y=1.01)

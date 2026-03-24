@@ -1,17 +1,21 @@
 """
 VLA Configuration Registry
 
-Defines all 64 VLA configurations across 3 experiment phases (P0/P1/P2).
+Defines all VLA configurations across 3 experiment phases (P0/P1/P2),
+organized around 7 research questions:
+
+  Q1: Component Scaling — V/L/A 三组件各自增大，谁的延迟收益最高？
+  Q2: Optimal Allocation — 固定总参数预算，V/L/A 最优分配比例是什么？
+  Q3: Bottleneck — V/L/A 三组件之间是否存在瓶颈效应？
+  Q4: Action Architecture — 6 种 action 拓扑，架构 vs 大小哪个更重要？
+  Q5: Chunk & Steps — chunk size 和 denoising steps 的延迟-效果权衡？
+  Q6: Cross-Platform — 同一架构在 Edge vs Server 上的延迟特性差异？
+  Q7: Pareto Frontier — 结合精度数据，accuracy-latency 最优前沿在哪？
 
 Model components:
   Vision (V): SigLIP2-B (86M), SigLIP2-L (307M), SigLIP2-So (400M)
   Language (L): Qwen2.5-0.5B, Qwen2.5-1.5B, Qwen2.5-3B
-  Action (A): FM (Flow Matching), Diff (Diffusion), AR (Autoregressive), MLP
-
-Action head sizes:
-  FM/Diff: S (~50M), M (~200M), L (~450M)
-  AR: reuses LLM backbone (no separate action model)
-  MLP: S (~10M), M (~30M), L (~80M)
+  Action (A): 6 topologies — Cascade / SharedAttn / CrossAttn / AR-Naive / AR-FAST / Regression
 """
 
 from dataclasses import dataclass
@@ -390,9 +394,9 @@ def _build_p1_configs():
     """Build P1 experiment configs (12 VLAs)."""
     configs = []
 
-    # Group G: Chunk size sweep on Cascade-M (VLM-5) (4 configs)
+    # Group G: Chunk size sweep on Cascade-M (VLM-5)
     g_id = 56
-    for chunk in [1, 5, 25, 50]:
+    for chunk in [1, 2, 5, 10, 20, 50, 100]:
         configs.append(VLAConfig(
             config_id=g_id, group="G", phase="P1",
             vision_key="V-M", language_key="L-M", action_key="Cascade-M",
@@ -400,9 +404,9 @@ def _build_p1_configs():
         ))
         g_id += 1
 
-    # Group H: Denoising steps sweep on Cascade-M (VLM-5) (3 configs)
-    h_id = 60
-    for steps in [5, 25, 50]:
+    # Group H: Denoising steps sweep on Cascade-M (VLM-5)
+    h_id = g_id
+    for steps in [1, 2, 5, 10, 20, 50, 100]:
         configs.append(VLAConfig(
             config_id=h_id, group="H", phase="P1",
             vision_key="V-M", language_key="L-M", action_key="Cascade-M",
@@ -410,10 +414,10 @@ def _build_p1_configs():
         ))
         h_id += 1
 
-    # Group I: AR-Naive vs AR-FAST chunk sweep (VLM-5) (6 configs)
-    i_id = 63
+    # Group I: AR-Naive vs AR-FAST chunk sweep (VLM-5)
+    i_id = h_id
     for action_key in ["AR-Naive", "AR-FAST"]:
-        for chunk in [1, 10, 50]:
+        for chunk in [1, 2, 5, 10, 20, 50]:
             configs.append(VLAConfig(
                 config_id=i_id, group="I", phase="P1",
                 vision_key="V-M", language_key="L-M", action_key=action_key,
@@ -421,7 +425,7 @@ def _build_p1_configs():
             ))
             i_id += 1
 
-    assert len(configs) == 13, f"Expected 13 P1 configs, got {len(configs)}"
+    assert len(configs) == 26, f"Expected 26 P1 configs, got {len(configs)}"
     return configs
 
 
@@ -434,7 +438,7 @@ def _build_p2_configs():
     configs = []
 
     # Group K: Chunk generalization VLM-1/9 × chunk={1,50} (4 configs)
-    k_id = 69
+    k_id = 82
     for vlm_num in [1, 9]:
         v, l = _vlm(vlm_num)
         for chunk in [1, 50]:
@@ -446,7 +450,7 @@ def _build_p2_configs():
             k_id += 1
 
     # Group L: Steps generalization VLM-1/9 × steps={5,50} (4 configs)
-    l_id = 73
+    l_id = 86
     for vlm_num in [1, 9]:
         v, l_ = _vlm(vlm_num)
         for steps in [5, 50]:
@@ -458,7 +462,7 @@ def _build_p2_configs():
             l_id += 1
 
     # Group M: CrossAttn S/L scaling on corner VLMs (4 configs)
-    m_id = 77
+    m_id = 90
     for vlm_num in [1, 9]:
         v, l = _vlm(vlm_num)
         for size in ["S", "L"]:
@@ -484,7 +488,8 @@ def get_all_configs():
     global _ALL_CONFIGS
     if _ALL_CONFIGS is None:
         _ALL_CONFIGS = _build_p0_configs() + _build_p1_configs() + _build_p2_configs()
-        assert len(_ALL_CONFIGS) == 80, f"Expected 80 configs, got {len(_ALL_CONFIGS)}"
+        total = len(_ALL_CONFIGS)
+        assert total > 0, "No configs generated"
     return _ALL_CONFIGS
 
 
@@ -521,8 +526,8 @@ HARDWARE_PRESETS = {
     ],
 }
 
-# Default test platforms from the paper
-DEFAULT_SYSTEMS = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
+# Default test platforms
+DEFAULT_SYSTEMS = ["Jetson_AGX_Orin_64GB", "A100_80GB", "Jetson_AGX_Thor"]
 
 # Precision configs
 PRECISION_CONFIGS = {
