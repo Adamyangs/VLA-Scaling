@@ -58,9 +58,8 @@ print("\n[Test 3] Cascade Denoise: separate DiT, latency linear in steps")
 r10 = engine.evaluate_action(make(ak="Cascade-M"), HW)
 r20 = engine.evaluate_action(make(ak="Cascade-M", steps=20), HW)
 ratio = r20.time_ms / r10.time_ms
-# Ratio is <2.0x because KV projection is a fixed one-time cost
-check(f"steps 10->20: {r10.time_ms:.2f}->{r20.time_ms:.2f}ms, ratio={ratio:.2f}x (<2.0x due to KV proj)",
-      1.7 < ratio < 2.0, f"expected ~1.8x, got {ratio:.2f}x")
+check(f"steps 10->20: {r10.time_ms:.2f}->{r20.time_ms:.2f}ms, ratio={ratio:.2f}x",
+      abs(ratio - 2.0) < 0.01, f"expected 2.0x, got {ratio:.2f}x")
 
 # Size scaling: S < M < L (different DiT)
 rs = engine.evaluate_action(make(ak="Cascade-S"), HW)
@@ -78,10 +77,9 @@ sa_l = engine.evaluate_action(make(ak="SharedAttn-L"), HW)
 check(f"S({sa_s.time_ms:.2f}) < M({sa_m.time_ms:.2f}) < L({sa_l.time_ms:.2f})",
       sa_s.time_ms < sa_m.time_ms < sa_l.time_ms)
 
-# SharedAttn-M < Cascade-M (SharedAttn saves KV projection cost)
-cascade_m_time = r10.time_ms  # Cascade-M includes KV projection
-check(f"SharedAttn-M({sa_m.time_ms:.2f}) < Cascade-M({cascade_m_time:.2f}) (no KV proj)",
-      sa_m.time_ms < cascade_m_time)
+# SharedAttn-M == Cascade-M (same expert model, KV proj is <2% — negligible)
+check(f"SharedAttn-M({sa_m.time_ms:.4f}) == Cascade-M({r10.time_ms:.4f})",
+      abs(sa_m.time_ms - r10.time_ms) < 0.01)
 
 # Action latency varies modestly with VLM seq len (affects cross-attn KV size)
 sa_small = engine.evaluate_action(make(lk="L-S", ak="SharedAttn-M"), HW)
@@ -89,13 +87,13 @@ sa_large = engine.evaluate_action(make(lk="L-L", ak="SharedAttn-M"), HW)
 check(f"L-S({sa_small.time_ms:.2f}) ~ L-L({sa_large.time_ms:.2f}), ratio<2x",
       sa_large.time_ms / sa_small.time_ms < 2.0)
 
-# ---- Test 5: CrossAttn Denoise — same as Cascade (both have KV projection) ----
-print("\n[Test 5] CrossAttn Denoise: same as Cascade (both pay KV projection)")
+# ---- Test 5: All 3 denoise topologies equal (KV proj <2%, negligible) ----
+print("\n[Test 5] CrossAttn == Cascade == SharedAttn (same expert, KV proj negligible)")
 ca = engine.evaluate_action(make(ak="CrossAttn-M"), HW)
 check(f"CrossAttn-M({ca.time_ms:.4f}) == Cascade-M({r10.time_ms:.4f})",
       abs(ca.time_ms - r10.time_ms) < 0.01)
-check(f"CrossAttn-M({ca.time_ms:.2f}) > SharedAttn-M({sa_m.time_ms:.2f})",
-      ca.time_ms > sa_m.time_ms)
+check(f"CrossAttn-M({ca.time_ms:.4f}) == SharedAttn-M({sa_m.time_ms:.4f})",
+      abs(ca.time_ms - sa_m.time_ms) < 0.01)
 
 # ---- Test 6: AR-Naive — dof * chunk tokens, linear scaling ----
 print("\n[Test 6] AR-Naive: tokens = dof * chunk, linear in both")

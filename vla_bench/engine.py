@@ -291,14 +291,22 @@ class VLAPerfEngine:
         chunk_size = config.effective_chunk_size
         denoising_steps = config.effective_denoising_steps
 
-        if action_type == "cascade_denoise":
-            # Cascade (GR00T N1-style): VLM → separate DiT via cross-attention.
-            # Step 1: project VLM output features → DiT KV space (one-time).
-            # Steps 1-N: DiT processes action tokens, cross-attends to cached KV.
+        if action_type in ("cascade_denoise", "shared_attn_denoise", "cross_attn_denoise"):
+            # All three denoise topologies: action expert × N denoising steps.
             #
-            # One-time KV projection cost:
-            #   FLOPs = 2 × vlm_seq × vlm_hidden × (kv_heads × head_dim) × layers
-            # This is modeled as a single prefill pass through the expert.
+            # GenZ's parallel_decode models per step:
+            #   QKV(action tokens) + CrossAttn(to context KV) + SelfAttn + FFN
+            # Context KV is assumed pre-computed and read from memory.
+            #
+            # Topology differences (not captured in roofline, <2% impact):
+            #   Cascade:   one-time KV projection VLM→DiT (~0.04ms, <2%)
+            #   SharedAttn: no projection needed (reuses VLM KV directly)
+            #   CrossAttn: per-layer KV projection VLM→DiT (~0.04ms, <2%)
+            # These are simple Linear ops, negligible vs N denoising steps.
+            #
+            # All three use the action expert model (not VLM) because:
+            #   - Cascade/CrossAttn: separate DiT with its own weights
+            #   - SharedAttn (pi0): separate FFN weights, shared attention heads
             single_step = self._run_parallel_decode(
                 model_name=a["model_name"],
                 system=system,
@@ -307,75 +315,12 @@ class VLAPerfEngine:
                 self_attention=True,
                 num_devices=num_devices,
             )
-            # Add one-time KV projection: VLM features → DiT KV (run once)
-            kv_proj = self._run_prefill(
-                model_name=a["model_name"],
-                system=system,
-                input_tokens=config.vlm_sequence_length,
-                num_devices=num_devices,
-            )
-            return ComponentResult(
-                time_ms=kv_proj.time_ms + single_step.time_ms * denoising_steps,
-                boundness=single_step.boundness,
-                op_intensity=single_step.op_intensity,
-                weights_mb=single_step.weights_mb + kv_proj.weights_mb,
-                kv_cache_mb=single_step.kv_cache_mb + kv_proj.kv_cache_mb,
-            )
-
-        elif action_type == "shared_attn_denoise":
-            # SharedAttn (pi0-style): action tokens share VLM's self-attention
-            # heads but have SEPARATE FFN weights (action expert's FFN).
-            # VLM's KV cache is directly reused — NO K/V projection needed.
-            # Per step: action tokens go through action expert's transformer,
-            # cross-attending to VLM's existing KV cache.
-            #
-            # Constraint: expert.head_dim must == VLM.head_dim for shared attn.
-            # Our model uses the expert config for compute, which is correct
-            # as long as head dimensions match (verified at config level).
-            single_step = self._run_parallel_decode(
-                model_name=a["model_name"],
-                system=system,
-                input_tokens=config.vlm_sequence_length,
-                output_tokens_parallel=chunk_size,
-                self_attention=True,
-                num_devices=num_devices,
-            )
-            # No KV projection cost — VLM KV is directly reusable
             return ComponentResult(
                 time_ms=single_step.time_ms * denoising_steps,
                 boundness=single_step.boundness,
                 op_intensity=single_step.op_intensity,
                 weights_mb=single_step.weights_mb,
                 kv_cache_mb=single_step.kv_cache_mb,
-            )
-
-        elif action_type == "cross_attn_denoise":
-            # CrossAttn (SmolVLA-style): separate DiT with per-layer cross-attn
-            # to VLM hidden states. Each DiT layer cross-attends to corresponding
-            # VLM layer's output via its own K/V projection.
-            # Step 1: project all VLM per-layer features → DiT KV (one-time).
-            # Steps 1-N: DiT processes action tokens with cached cross-attn KV.
-            single_step = self._run_parallel_decode(
-                model_name=a["model_name"],
-                system=system,
-                input_tokens=config.vlm_sequence_length,
-                output_tokens_parallel=chunk_size,
-                self_attention=True,
-                num_devices=num_devices,
-            )
-            # One-time KV projection (same cost model as Cascade)
-            kv_proj = self._run_prefill(
-                model_name=a["model_name"],
-                system=system,
-                input_tokens=config.vlm_sequence_length,
-                num_devices=num_devices,
-            )
-            return ComponentResult(
-                time_ms=kv_proj.time_ms + single_step.time_ms * denoising_steps,
-                boundness=single_step.boundness,
-                op_intensity=single_step.op_intensity,
-                weights_mb=single_step.weights_mb + kv_proj.weights_mb,
-                kv_cache_mb=single_step.kv_cache_mb + kv_proj.kv_cache_mb,
             )
 
         elif action_type == "ar_naive":
