@@ -73,57 +73,92 @@ LANGUAGE_CONFIGS = {
 # ============================================================
 
 ACTION_CONFIGS = {
-    # Flow Matching: DiT with cross-attn to VLM KV cache, N denoising steps
-    "FM-S": {
-        "model_name": "fm-action-expert-s",
-        "display_name": "FM-S",
-        "type": "flow_matching",
+    # ---- Type 1: Cascade Denoise (VLM → separate DiT via cross-attention) ----
+    # Representatives: GR00T N1, CogACT, DexVLA
+    # Pipeline: VLM prefill → DiT parallel_decode × N steps (sequential)
+    "Cascade-S": {
+        "model_name": "denoise-expert-s",
+        "display_name": "Cascade-S",
+        "type": "cascade_denoise",
         "params": "50M",
         "default_denoising_steps": 10,
         "default_chunk_size": 10,
     },
-    "FM-M": {
-        "model_name": "fm-action-expert-m",
-        "display_name": "FM-M",
-        "type": "flow_matching",
+    "Cascade-M": {
+        "model_name": "denoise-expert-m",
+        "display_name": "Cascade-M",
+        "type": "cascade_denoise",
         "params": "200M",
         "default_denoising_steps": 10,
         "default_chunk_size": 10,
     },
-    "FM-L": {
-        "model_name": "fm-action-expert-l",
-        "display_name": "FM-L",
-        "type": "flow_matching",
+    "Cascade-L": {
+        "model_name": "denoise-expert-l",
+        "display_name": "Cascade-L",
+        "type": "cascade_denoise",
         "params": "450M",
         "default_denoising_steps": 10,
         "default_chunk_size": 10,
     },
-    # Diffusion: DiT with cross-attn, DDPM schedule, N denoising steps
-    "Diff-S": {
-        "model_name": "diff-action-expert-s",
-        "display_name": "Diff-S",
-        "type": "diffusion",
+    # ---- Type 2: SharedAttn Denoise (action tokens enter VLM self-attn) ----
+    # Representatives: pi0, ForceVLA, OneTwoVLA
+    # Pipeline: action tokens share VLM's self-attention layers, KV cache reused
+    # across denoising steps (only action tokens recomputed per step)
+    "SharedAttn-S": {
+        "model_name": "denoise-expert-s",
+        "display_name": "SharedAttn-S",
+        "type": "shared_attn_denoise",
         "params": "50M",
         "default_denoising_steps": 10,
         "default_chunk_size": 10,
     },
-    "Diff-M": {
-        "model_name": "diff-action-expert-m",
-        "display_name": "Diff-M",
-        "type": "diffusion",
+    "SharedAttn-M": {
+        "model_name": "denoise-expert-m",
+        "display_name": "SharedAttn-M",
+        "type": "shared_attn_denoise",
         "params": "200M",
         "default_denoising_steps": 10,
         "default_chunk_size": 10,
     },
-    "Diff-L": {
-        "model_name": "diff-action-expert-l",
-        "display_name": "Diff-L",
-        "type": "diffusion",
+    "SharedAttn-L": {
+        "model_name": "denoise-expert-l",
+        "display_name": "SharedAttn-L",
+        "type": "shared_attn_denoise",
         "params": "450M",
         "default_denoising_steps": 10,
         "default_chunk_size": 10,
     },
-    # Autoregressive: reuses LLM backbone, sequential token generation
+    # ---- Type 3: CrossAttn Denoise (separate DiT with cross-attn to VLM) ----
+    # Representatives: SmolVLA, GR-3
+    # Pipeline: similar to Cascade but DiT is lightweight with interleaved
+    # self-attention + cross-attention blocks; VLM features cached
+    "CrossAttn-S": {
+        "model_name": "denoise-expert-s",
+        "display_name": "CrossAttn-S",
+        "type": "cross_attn_denoise",
+        "params": "50M",
+        "default_denoising_steps": 10,
+        "default_chunk_size": 10,
+    },
+    "CrossAttn-M": {
+        "model_name": "denoise-expert-m",
+        "display_name": "CrossAttn-M",
+        "type": "cross_attn_denoise",
+        "params": "200M",
+        "default_denoising_steps": 10,
+        "default_chunk_size": 10,
+    },
+    "CrossAttn-L": {
+        "model_name": "denoise-expert-l",
+        "display_name": "CrossAttn-L",
+        "type": "cross_attn_denoise",
+        "params": "450M",
+        "default_denoising_steps": 10,
+        "default_chunk_size": 10,
+    },
+    # ---- Type 4: Autoregressive Token (VLM directly outputs action tokens) ----
+    # Representatives: OpenVLA, RT-2, Octo (AR mode)
+    # Pipeline: VLM prefill → decode one action token at a time
     "AR": {
         "model_name": None,  # reuses LLM backbone
         "display_name": "AR",
@@ -132,27 +167,29 @@ ACTION_CONFIGS = {
         "default_denoising_steps": 1,
         "default_chunk_size": 10,
     },
-    # MLP: simple projection head
-    "MLP-S": {
+    # ---- Type 5: Direct Regression (VLM hidden → MLP → actions) ----
+    # Representatives: OpenVLA-OFT, BridgeVLA, VOTE
+    # Pipeline: VLM prefill → extract <ACT> hidden states → MLP forward
+    "Regress-S": {
         "model_name": "mlp-action-head-s",
-        "display_name": "MLP-S",
-        "type": "mlp",
+        "display_name": "Regress-S",
+        "type": "regression",
         "params": "10M",
         "default_denoising_steps": 1,
         "default_chunk_size": 10,
     },
-    "MLP-M": {
+    "Regress-M": {
         "model_name": "mlp-action-head-m",
-        "display_name": "MLP-M",
-        "type": "mlp",
+        "display_name": "Regress-M",
+        "type": "regression",
         "params": "30M",
         "default_denoising_steps": 1,
         "default_chunk_size": 10,
     },
-    "MLP-L": {
+    "Regress-L": {
         "model_name": "mlp-action-head-l",
-        "display_name": "MLP-L",
-        "type": "mlp",
+        "display_name": "Regress-L",
+        "type": "regression",
         "params": "80M",
         "default_denoising_steps": 1,
         "default_chunk_size": 10,
@@ -273,66 +310,58 @@ def _build_p0_configs():
     """Build P0 experiment configs (40 VLAs)."""
     configs = []
 
-    # Group A: 3x3 V×L grid, fixed FM-M action head (9 configs)
+    # Group A: 3x3 V×L grid, fixed Cascade-M action head (9 configs)
     for i, vlm_num in enumerate(range(1, 10), start=1):
         v, l = _vlm(vlm_num)
         configs.append(VLAConfig(
             config_id=i, group="A", phase="P0",
-            vision_key=v, language_key=l, action_key="FM-M",
+            vision_key=v, language_key=l, action_key="Cascade-M",
         ))
 
-    # Group B: V-Scaling × Diff/AR/MLP (fix L=1.5B) (9 configs)
+    # Group B: V-Scaling × 4 action topologies (fix L=1.5B) (12 configs)
+    # One representative per topology type at M size
     b_id = 10
     for v_key in ["V-S", "V-M", "V-L"]:
-        for action_key in ["Diff-M", "AR", "MLP-M"]:
+        for action_key in ["SharedAttn-M", "CrossAttn-M", "AR", "Regress-M"]:
             configs.append(VLAConfig(
                 config_id=b_id, group="B", phase="P0",
                 vision_key=v_key, language_key="L-M", action_key=action_key,
             ))
             b_id += 1
 
-    # Group C: L-Scaling × Diff/AR/MLP (fix V=L, SigLIP2-L) (6 configs)
-    c_id = 19
+    # Group C: L-Scaling × 4 action topologies (fix V=SigLIP2-L) (8 configs)
+    c_id = 22
     for l_key in ["L-S", "L-L"]:
-        for action_key in ["Diff-M", "AR", "MLP-M"]:
+        for action_key in ["SharedAttn-M", "CrossAttn-M", "AR", "Regress-M"]:
             configs.append(VLAConfig(
                 config_id=c_id, group="C", phase="P0",
                 vision_key="V-M", language_key=l_key, action_key=action_key,
             ))
             c_id += 1
 
-    # Group D: A-Scaling on VLM-5 (FM/Diff/MLP × S/M/L) (6 configs)
-    d_id = 25
-    for action_key in ["FM-S", "FM-L", "Diff-S", "Diff-L", "MLP-S", "MLP-L"]:
-        configs.append(VLAConfig(
-            config_id=d_id, group="D", phase="P0",
-            vision_key="V-M", language_key="L-M", action_key=action_key,
-        ))
-        d_id += 1
+    # Group D: A-Scaling on VLM-5, S/M/L for Cascade/SharedAttn/Regress (9 configs)
+    d_id = 30
+    for prefix in ["Cascade", "SharedAttn", "Regress"]:
+        for size in ["S", "M", "L"]:
+            action_key = f"{prefix}-{size}"
+            configs.append(VLAConfig(
+                config_id=d_id, group="D", phase="P0",
+                vision_key="V-M", language_key="L-M", action_key=action_key,
+            ))
+            d_id += 1
 
-    # Group E: Corner VLMs (1,9) × Diff/AR/MLP (6 configs)
-    e_id = 31
+    # Group E: Corner VLMs (1,9) × 3 topology types at M (6 configs → Q4 generalization)
+    e_id = 39
     for vlm_num in [1, 9]:
         v, l = _vlm(vlm_num)
-        for action_key in ["Diff-M", "AR", "MLP-M"]:
+        for action_key in ["SharedAttn-M", "AR", "Regress-M"]:
             configs.append(VLAConfig(
                 config_id=e_id, group="E", phase="P0",
                 vision_key=v, language_key=l, action_key=action_key,
             ))
             e_id += 1
 
-    # Group F: FM A-Scaling across VLMs 1,9 (4 configs)
-    f_id = 37
-    for vlm_num in [1, 9]:
-        v, l = _vlm(vlm_num)
-        for action_key in ["FM-S", "FM-L"]:
-            configs.append(VLAConfig(
-                config_id=f_id, group="F", phase="P0",
-                vision_key=v, language_key=l, action_key=action_key,
-            ))
-            f_id += 1
-
-    assert len(configs) == 40, f"Expected 40 P0 configs, got {len(configs)}"
+    assert len(configs) == 44, f"Expected 44 P0 configs, got {len(configs)}"
     return configs
 
 
@@ -344,28 +373,28 @@ def _build_p1_configs():
     """Build P1 experiment configs (12 VLAs)."""
     configs = []
 
-    # Group G: Chunk size sweep (VLM-5 + FM-M) (4 configs)
-    g_id = 41
+    # Group G: Chunk size sweep on Cascade-M (VLM-5) (4 configs)
+    g_id = 45
     for chunk in [1, 5, 25, 50]:
         configs.append(VLAConfig(
             config_id=g_id, group="G", phase="P1",
-            vision_key="V-M", language_key="L-M", action_key="FM-M",
+            vision_key="V-M", language_key="L-M", action_key="Cascade-M",
             chunk_size=chunk,
         ))
         g_id += 1
 
-    # Group H: Denoising steps sweep (VLM-5 + FM-M) (3 configs)
-    h_id = 45
+    # Group H: Denoising steps sweep on Cascade-M (VLM-5) (3 configs)
+    h_id = 49
     for steps in [5, 25, 50]:
         configs.append(VLAConfig(
             config_id=h_id, group="H", phase="P1",
-            vision_key="V-M", language_key="L-M", action_key="FM-M",
+            vision_key="V-M", language_key="L-M", action_key="Cascade-M",
             denoising_steps=steps,
         ))
         h_id += 1
 
-    # Group I: AR chunk sweep (VLM-5 + AR) (3 configs)
-    i_id = 48
+    # Group I: AR chunk sweep (VLM-5) (3 configs)
+    i_id = 52
     for chunk in [1, 5, 25]:
         configs.append(VLAConfig(
             config_id=i_id, group="I", phase="P1",
@@ -374,17 +403,7 @@ def _build_p1_configs():
         ))
         i_id += 1
 
-    # Group J: VLM-1/9 × MLP-S (2 configs)
-    j_id = 51
-    for vlm_num in [1, 9]:
-        v, l = _vlm(vlm_num)
-        configs.append(VLAConfig(
-            config_id=j_id, group="J", phase="P1",
-            vision_key=v, language_key=l, action_key="MLP-S",
-        ))
-        j_id += 1
-
-    assert len(configs) == 12, f"Expected 12 P1 configs, got {len(configs)}"
+    assert len(configs) == 10, f"Expected 10 P1 configs, got {len(configs)}"
     return configs
 
 
@@ -397,37 +416,37 @@ def _build_p2_configs():
     configs = []
 
     # Group K: Chunk generalization VLM-1/9 × chunk={1,50} (4 configs)
-    k_id = 53
+    k_id = 55
     for vlm_num in [1, 9]:
         v, l = _vlm(vlm_num)
         for chunk in [1, 50]:
             configs.append(VLAConfig(
                 config_id=k_id, group="K", phase="P2",
-                vision_key=v, language_key=l, action_key="FM-M",
+                vision_key=v, language_key=l, action_key="Cascade-M",
                 chunk_size=chunk,
             ))
             k_id += 1
 
     # Group L: Steps generalization VLM-1/9 × steps={5,50} (4 configs)
-    l_id = 57
+    l_id = 59
     for vlm_num in [1, 9]:
         v, l_ = _vlm(vlm_num)
         for steps in [5, 50]:
             configs.append(VLAConfig(
                 config_id=l_id, group="L", phase="P2",
-                vision_key=v, language_key=l_, action_key="FM-M",
+                vision_key=v, language_key=l_, action_key="Cascade-M",
                 denoising_steps=steps,
             ))
             l_id += 1
 
-    # Group M: Diff scaling generalization VLM-1/9 × Diff-S/L (4 configs)
-    m_id = 61
+    # Group M: CrossAttn S/L scaling on corner VLMs (4 configs)
+    m_id = 63
     for vlm_num in [1, 9]:
         v, l = _vlm(vlm_num)
-        for action_key in ["Diff-S", "Diff-L"]:
+        for size in ["S", "L"]:
             configs.append(VLAConfig(
                 config_id=m_id, group="M", phase="P2",
-                vision_key=v, language_key=l, action_key=action_key,
+                vision_key=v, language_key=l, action_key=f"CrossAttn-{size}",
             ))
             m_id += 1
 
@@ -447,7 +466,7 @@ def get_all_configs():
     global _ALL_CONFIGS
     if _ALL_CONFIGS is None:
         _ALL_CONFIGS = _build_p0_configs() + _build_p1_configs() + _build_p2_configs()
-        assert len(_ALL_CONFIGS) == 64, f"Expected 64 configs, got {len(_ALL_CONFIGS)}"
+        assert len(_ALL_CONFIGS) == 66, f"Expected 66 configs, got {len(_ALL_CONFIGS)}"
     return _ALL_CONFIGS
 
 

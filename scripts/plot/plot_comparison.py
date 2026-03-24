@@ -39,10 +39,11 @@ C_VLM = "#E71D36"
 C_ACTION = "#3772FF"
 
 ACTION_COLORS = {
-    "FM": "#3772FF",
-    "Diff": "#FF9F1C",
+    "Cascade": "#3772FF",
+    "SharedAttn": "#FF9F1C",
+    "CrossAttn": "#9B59B6",
     "AR": "#2EC4B6",
-    "MLP": "#E71D36",
+    "Regress": "#E71D36",
 }
 
 ACTION_DISPLAY = {
@@ -62,9 +63,9 @@ def filter_baseline(df):
     """Keep only baseline configs: default chunk_size=10, default denoising_steps.
 
     Removes Group G/H/I/K/L sweep configs that override chunk or steps.
-    Only keeps groups A-F, J, M (baseline defaults) to avoid duplicates.
+    Only keeps groups A-E, M (baseline defaults) to avoid duplicates.
     """
-    baseline_groups = ["A", "B", "C", "D", "E", "F", "J", "M"]
+    baseline_groups = ["A", "B", "C", "D", "E", "M"]
     return df[df["group"].isin(baseline_groups)]
 
 
@@ -73,8 +74,14 @@ def filter_baseline(df):
 # ================================================================
 def fig1_action_type_comparison(df, output_dir):
     """Side-by-side bar: 4 action types × 2 platforms, per-component breakdown."""
-    action_keys = ["FM-M", "Diff-M", "AR", "MLP-M"]
-    action_labels = ["Flow Matching\n(200M)", "Diffusion\n(200M)", "Autoregressive\n(shared LLM)", "MLP\n(30M)"]
+    action_keys = ["Cascade-M", "SharedAttn-M", "CrossAttn-M", "AR", "Regress-M"]
+    action_labels = [
+        "Cascade\nDenoise\n(200M DiT)",
+        "SharedAttn\nDenoise\n(VLM shared)",
+        "CrossAttn\nDenoise\n(200M DiT)",
+        "Auto-\nregressive\n(shared LLM)",
+        "Direct\nRegression\n(30M MLP)",
+    ]
     systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
 
     base = filter_baseline(df)
@@ -132,9 +139,9 @@ def fig2_action_size_scaling(df, output_dir):
     """Grouped bar: S/M/L for FM, Diff, MLP on VLM-5."""
     systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
     arch_groups = [
-        ("Flow Matching", ["FM-S", "FM-M", "FM-L"], ["S\n(50M)", "M\n(200M)", "L\n(450M)"]),
-        ("Diffusion", ["Diff-S", "Diff-M", "Diff-L"], ["S\n(50M)", "M\n(200M)", "L\n(450M)"]),
-        ("MLP", ["MLP-S", "MLP-M", "MLP-L"], ["S\n(10M)", "M\n(30M)", "L\n(80M)"]),
+        ("Cascade Denoise", ["Cascade-S", "Cascade-M", "Cascade-L"], ["S\n(50M)", "M\n(200M)", "L\n(450M)"]),
+        ("SharedAttn Denoise", ["SharedAttn-S", "SharedAttn-M", "SharedAttn-L"], ["S\n(50M)", "M\n(200M)", "L\n(450M)"]),
+        ("Direct Regression", ["Regress-S", "Regress-M", "Regress-L"], ["S\n(10M)", "M\n(30M)", "L\n(80M)"]),
     ]
 
     base = filter_baseline(df)
@@ -193,7 +200,7 @@ def fig2_action_size_scaling(df, output_dir):
 def fig3_vlm_backbone_comparison(df, output_dir):
     """Stacked bar for 9 VLMs with FM-M, showing V/L/A component ratio."""
     systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
-    sub = df[(df["action_key"] == "FM-M") & (df["group"] == "A")]
+    sub = df[(df["action_key"] == "Cascade-M") & (df["group"] == "A")]
 
     vlm_labels = [
         "B+0.5B", "B+1.5B", "B+3B",
@@ -217,7 +224,7 @@ def fig3_vlm_backbone_comparison(df, output_dir):
 
         ax.bar(x, v_arr, width, color=C_VISION, label="Vision Encoder")
         ax.bar(x, l_arr, width, bottom=v_arr, color=C_VLM, label="Language Backbone")
-        ax.bar(x, a_arr, width, bottom=v_arr + l_arr, color=C_ACTION, label="Action Head (FM-M)")
+        ax.bar(x, a_arr, width, bottom=v_arr + l_arr, color=C_ACTION, label="Action Head (Cascade-M)")
 
         for i, (v, l, a) in enumerate(zip(v_arr, l_arr, a_arr)):
             total = v + l + a
@@ -253,7 +260,10 @@ def fig4_v_scaling(df, output_dir):
     systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
     # Group B (V-Scaling x Diff/AR/MLP) + Group A row 2 (V-M x FM-M with L=1.5B)
     # We need FM-M with L=1.5B for all 3 V sizes → configs 2,5,8 from Group A
-    action_items = [("FM-M", "FM"), ("Diff-M", "Diff"), ("AR", "AR"), ("MLP-M", "MLP")]
+    action_items = [
+        ("Cascade-M", "Cascade"), ("SharedAttn-M", "SharedAttn"),
+        ("CrossAttn-M", "CrossAttn"), ("AR", "AR"), ("Regress-M", "Regress"),
+    ]
 
     base = filter_baseline(df)
     sub = base[(base["language_key"] == "L-M") &
@@ -304,7 +314,10 @@ def fig4_v_scaling(df, output_dir):
 def fig5_l_scaling(df, output_dir):
     """Line plot: L-Scaling per action type, both platforms."""
     systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
-    action_items = [("FM-M", "FM"), ("Diff-M", "Diff"), ("AR", "AR"), ("MLP-M", "MLP")]
+    action_items = [
+        ("Cascade-M", "Cascade"), ("SharedAttn-M", "SharedAttn"),
+        ("CrossAttn-M", "CrossAttn"), ("AR", "AR"), ("Regress-M", "Regress"),
+    ]
 
     base = filter_baseline(df)
     sub = base[(base["vision_key"] == "V-M") &
@@ -362,12 +375,12 @@ def fig6_chunk_steps_tradeoff(df, output_dir):
     for row, hw in enumerate(systems):
         hw_data = df[df["hardware"] == hw]
 
-        # Panel 1: FM-M chunk size sweep (Group G)
+        # Panel 1: Cascade-M chunk size sweep (Group G)
         ax = axes[row][0]
         fm_chunk = hw_data[hw_data["group"] == "G"].sort_values("chunk_size")
         if not fm_chunk.empty:
             ax.bar(range(len(fm_chunk)), fm_chunk["action_time_ms"],
-                   color=ACTION_COLORS["FM"], width=0.5, label="Action Head")
+                   color=ACTION_COLORS["Cascade"], width=0.5, label="Action Head")
             # Add VLM baseline
             vlm_base = fm_chunk["vlm_time_ms"].iloc[0]
             ax.axhline(y=vlm_base, color=C_VLM, linestyle="--", alpha=0.7,
@@ -379,19 +392,18 @@ def fig6_chunk_steps_tradeoff(df, output_dir):
                 ax.text(i, r["action_time_ms"] + 0.1, f"{r['action_time_ms']:.1f}",
                         ha="center", va="bottom", fontsize=8)
         if row == 0:
-            ax.set_title("FM: Chunk Size Sweep", fontsize=11, fontweight="bold")
+            ax.set_title("Denoise: Chunk Size Sweep", fontsize=11, fontweight="bold")
         ax.set_ylabel(f"{HW_SHORT[hw]}\nAction Latency (ms)")
         ax.legend(fontsize=7)
 
-        # Panel 2: FM-M denoising steps sweep (Group H + default)
+        # Panel 2: Cascade-M denoising steps sweep (Group H + default)
         ax = axes[row][1]
-        # Include the default (steps=10, config #5 on VLM-5)
         fm_steps_g = hw_data[hw_data["group"] == "H"]
         fm_default = hw_data[(hw_data["config_id"] == 5)]
         fm_steps = pd.concat([fm_default, fm_steps_g]).sort_values("denoising_steps")
         if not fm_steps.empty:
             ax.bar(range(len(fm_steps)), fm_steps["action_time_ms"],
-                   color=ACTION_COLORS["FM"], width=0.5)
+                   color=ACTION_COLORS["Cascade"], width=0.5)
             ax.axhline(y=fm_steps["vlm_time_ms"].iloc[0], color=C_VLM,
                        linestyle="--", alpha=0.7, label=f"VLM baseline")
             ax.set_xticks(range(len(fm_steps)))
@@ -401,13 +413,13 @@ def fig6_chunk_steps_tradeoff(df, output_dir):
                 ax.text(i, r["action_time_ms"] + 0.1, f"{r['action_time_ms']:.1f}",
                         ha="center", va="bottom", fontsize=8)
         if row == 0:
-            ax.set_title("FM: Denoising Steps Sweep", fontsize=11, fontweight="bold")
+            ax.set_title("Denoise: Steps Sweep", fontsize=11, fontweight="bold")
         ax.legend(fontsize=7)
 
         # Panel 3: AR chunk size sweep (Group I + default)
         ax = axes[row][2]
         ar_chunks_g = hw_data[hw_data["group"] == "I"]
-        ar_default = hw_data[(hw_data["config_id"] == 14)]  # AR on VLM-5
+        ar_default = hw_data[(hw_data["config_id"] == 16)]  # AR on VLM-5
         ar_chunks = pd.concat([ar_default, ar_chunks_g]).drop_duplicates("chunk_size").sort_values("chunk_size")
         if not ar_chunks.empty:
             ax.bar(range(len(ar_chunks)), ar_chunks["action_time_ms"],

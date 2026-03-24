@@ -287,9 +287,51 @@ class VLAPerfEngine:
         chunk_size = config.effective_chunk_size
         denoising_steps = config.effective_denoising_steps
 
-        if action_type in ("flow_matching", "diffusion"):
-            # FM/Diff: parallel decode × denoising steps
-            # Each denoising step: action tokens attend to VLM KV cache
+        if action_type == "cascade_denoise":
+            # Cascade: VLM produces features → separate DiT cross-attends → N steps
+            # Each step: DiT processes action tokens with cross-attention to VLM output
+            # VLM KV cache is the "input_tokens" context for the DiT
+            single_step = self._run_parallel_decode(
+                model_name=a["model_name"],
+                system=system,
+                input_tokens=config.vlm_sequence_length,
+                output_tokens_parallel=chunk_size,
+                self_attention=True,
+                num_devices=num_devices,
+            )
+            return ComponentResult(
+                time_ms=single_step.time_ms * denoising_steps,
+                boundness=single_step.boundness,
+                op_intensity=single_step.op_intensity,
+                weights_mb=single_step.weights_mb,
+                kv_cache_mb=single_step.kv_cache_mb,
+            )
+
+        elif action_type == "shared_attn_denoise":
+            # SharedAttn (pi0-style): action tokens enter VLM's self-attention
+            # KV cache from VLM observation tokens is reused across denoising steps
+            # Per step: only action tokens are recomputed (parallel decode on VLM)
+            # Use VLM backbone model (not separate DiT) for the shared attention pass
+            l = config.language
+            single_step = self._run_parallel_decode(
+                model_name=l["model_name"],
+                system=system,
+                input_tokens=config.vlm_sequence_length,
+                output_tokens_parallel=chunk_size,
+                self_attention=True,
+                num_devices=num_devices,
+            )
+            return ComponentResult(
+                time_ms=single_step.time_ms * denoising_steps,
+                boundness=single_step.boundness,
+                op_intensity=single_step.op_intensity,
+                weights_mb=single_step.weights_mb,
+                kv_cache_mb=single_step.kv_cache_mb,
+            )
+
+        elif action_type == "cross_attn_denoise":
+            # CrossAttn (SmolVLA-style): separate lightweight DiT with cross-attn
+            # Similar to cascade but DiT is independent; VLM features cached
             single_step = self._run_parallel_decode(
                 model_name=a["model_name"],
                 system=system,
@@ -307,8 +349,7 @@ class VLAPerfEngine:
             )
 
         elif action_type == "autoregressive":
-            # AR: reuses LLM backbone for sequential token generation
-            # decode_moddeling returns per-token latency, multiply by chunk_size
+            # AR: VLM directly generates discrete action tokens one at a time
             l = config.language
             single_token = self._run_decode(
                 model_name=l["model_name"],
@@ -325,13 +366,12 @@ class VLAPerfEngine:
                 kv_cache_mb=single_token.kv_cache_mb,
             )
 
-        elif action_type == "mlp":
-            # MLP: single prefill pass with 1 token through the MLP model
-            # The "input" is the VLM's last hidden representation
+        elif action_type == "regression":
+            # Regression: VLM hidden → MLP → continuous actions (single pass)
             return self._run_prefill(
                 model_name=a["model_name"],
                 system=system,
-                input_tokens=1,  # Single token (pooled VLM output)
+                input_tokens=1,
                 num_devices=num_devices,
             )
 
