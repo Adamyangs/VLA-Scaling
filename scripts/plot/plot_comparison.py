@@ -58,6 +58,16 @@ def load(csv_path):
     return pd.read_csv(csv_path)
 
 
+def filter_baseline(df):
+    """Keep only baseline configs: default chunk_size=10, default denoising_steps.
+
+    Removes Group G/H/I/K/L sweep configs that override chunk or steps.
+    Only keeps groups A-F, J, M (baseline defaults) to avoid duplicates.
+    """
+    baseline_groups = ["A", "B", "C", "D", "E", "F", "J", "M"]
+    return df[df["group"].isin(baseline_groups)]
+
+
 # ================================================================
 # Fig 1: Fix VLM-5, compare 4 action architectures (M size)
 # ================================================================
@@ -67,11 +77,9 @@ def fig1_action_type_comparison(df, output_dir):
     action_labels = ["Flow Matching\n(200M)", "Diffusion\n(200M)", "Autoregressive\n(shared LLM)", "MLP\n(30M)"]
     systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
 
-    # Filter to VLM-5 with default chunk/steps
-    mask = (df["vision_key"] == "V-M") & (df["language_key"] == "L-M") & \
-           (df["action_key"].isin(action_keys)) & (df["chunk_size"] == 10) & \
-           (df["denoising_steps"].isin([1, 10]))
-    sub = df[mask]
+    base = filter_baseline(df)
+    sub = base[(base["vision_key"] == "V-M") & (base["language_key"] == "L-M") &
+               (base["action_key"].isin(action_keys))]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5.5), sharey=False)
 
@@ -129,8 +137,8 @@ def fig2_action_size_scaling(df, output_dir):
         ("MLP", ["MLP-S", "MLP-M", "MLP-L"], ["S\n(10M)", "M\n(30M)", "L\n(80M)"]),
     ]
 
-    mask = (df["vision_key"] == "V-M") & (df["language_key"] == "L-M")
-    sub = df[mask]
+    base = filter_baseline(df)
+    sub = base[(base["vision_key"] == "V-M") & (base["language_key"] == "L-M")]
 
     fig, axes = plt.subplots(2, 3, figsize=(16, 9), sharey="row")
 
@@ -245,16 +253,11 @@ def fig4_v_scaling(df, output_dir):
     systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
     # Group B (V-Scaling x Diff/AR/MLP) + Group A row 2 (V-M x FM-M with L=1.5B)
     # We need FM-M with L=1.5B for all 3 V sizes → configs 2,5,8 from Group A
-    action_map = {
-        "FM-M": "flow_matching",
-        "Diff-M": "diffusion",
-        "AR": "autoregressive",
-        "MLP-M": "mlp",
-    }
+    action_items = [("FM-M", "FM"), ("Diff-M", "Diff"), ("AR", "AR"), ("MLP-M", "MLP")]
 
-    sub = df[(df["language_key"] == "L-M") &
-             (df["action_key"].isin(action_map.keys())) &
-             (df["chunk_size"] == 10)]
+    base = filter_baseline(df)
+    sub = base[(base["language_key"] == "L-M") &
+               (base["action_key"].isin([a[0] for a in action_items]))]
 
     v_order = {"V-S": 0, "V-M": 1, "V-L": 2}
     v_labels = ["SigLIP2-B\n(86M)", "SigLIP2-L\n(307M)", "SigLIP2-So\n(400M)"]
@@ -264,7 +267,7 @@ def fig4_v_scaling(df, output_dir):
     for ax, hw in zip(axes, systems):
         hw_data = sub[sub["hardware"] == hw]
 
-        for ak, color_key in [("FM-M", "FM"), ("Diff-M", "Diff"), ("AR", "AR"), ("MLP-M", "MLP")]:
+        for ak, color_key in action_items:
             a_data = hw_data[hw_data["action_key"] == ak].copy()
             a_data["_vx"] = a_data["vision_key"].map(v_order)
             a_data = a_data.sort_values("_vx")
@@ -275,7 +278,6 @@ def fig4_v_scaling(df, output_dir):
                     marker="o", color=ACTION_COLORS[color_key],
                     label=ak, linewidth=2.5, markersize=8)
 
-            # Annotate each point
             for _, row in a_data.iterrows():
                 ax.annotate(f"{row['e2e_time_ms']:.1f}",
                             (row["_vx"], row["e2e_time_ms"]),
@@ -290,7 +292,7 @@ def fig4_v_scaling(df, output_dir):
         ax.legend(fontsize=9)
         ax.grid(alpha=0.2)
 
-    fig.suptitle("Vision Encoder Scaling (Fixed L = Qwen2.5-1.5B, Action = M size)",
+    fig.suptitle("Vision Encoder Scaling (Fixed L = Qwen2.5-1.5B, chunk=10)",
                  fontsize=13, fontweight="bold", y=1.02)
     plt.tight_layout()
     save(fig, output_dir, "fig4_v_scaling")
@@ -302,12 +304,11 @@ def fig4_v_scaling(df, output_dir):
 def fig5_l_scaling(df, output_dir):
     """Line plot: L-Scaling per action type, both platforms."""
     systems = ["Jetson_AGX_Orin_64GB", "A800_80GB"]
-    action_map = {"FM-M": "FM", "Diff-M": "Diff", "AR": "AR", "MLP-M": "MLP"}
+    action_items = [("FM-M", "FM"), ("Diff-M", "Diff"), ("AR", "AR"), ("MLP-M", "MLP")]
 
-    # Group A row 2 (FM-M) + Group C (Diff/AR/MLP with V-M) + Group B middle (V-M)
-    sub = df[(df["vision_key"] == "V-M") &
-             (df["action_key"].isin(action_map.keys())) &
-             (df["chunk_size"] == 10)]
+    base = filter_baseline(df)
+    sub = base[(base["vision_key"] == "V-M") &
+               (base["action_key"].isin([a[0] for a in action_items]))]
 
     l_order = {"L-S": 0, "L-M": 1, "L-L": 2}
     l_labels = ["Qwen2.5-0.5B", "Qwen2.5-1.5B", "Qwen2.5-3B"]
@@ -317,16 +318,17 @@ def fig5_l_scaling(df, output_dir):
     for ax, hw in zip(axes, systems):
         hw_data = sub[sub["hardware"] == hw]
 
-        for ak, color_key in action_map.items():
+        for ak, color_key in action_items:
             a_data = hw_data[hw_data["action_key"] == ak].copy()
             a_data["_lx"] = a_data["language_key"].map(l_order)
             a_data = a_data.sort_values("_lx")
             if a_data.empty:
                 continue
 
+            n_points = len(a_data)
             ax.plot(a_data["_lx"], a_data["e2e_time_ms"],
                     marker="s", color=ACTION_COLORS[color_key],
-                    label=ak, linewidth=2.5, markersize=8)
+                    label=f"{ak} ({n_points} pts)", linewidth=2.5, markersize=8)
 
             for _, row in a_data.iterrows():
                 ax.annotate(f"{row['e2e_time_ms']:.1f}",
@@ -342,7 +344,7 @@ def fig5_l_scaling(df, output_dir):
         ax.legend(fontsize=9)
         ax.grid(alpha=0.2)
 
-    fig.suptitle("Language Backbone Scaling (Fixed V = SigLIP2-L, Action = M size)",
+    fig.suptitle("Language Backbone Scaling (Fixed V = SigLIP2-L, chunk=10)",
                  fontsize=13, fontweight="bold", y=1.02)
     plt.tight_layout()
     save(fig, output_dir, "fig5_l_scaling")
