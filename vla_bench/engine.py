@@ -348,9 +348,11 @@ class VLAPerfEngine:
                 kv_cache_mb=single_step.kv_cache_mb,
             )
 
-        elif action_type == "autoregressive":
-            # AR: VLM directly generates discrete action tokens one at a time
+        elif action_type == "ar_naive":
+            # Naive AR: one token per action dimension per step
+            # Total tokens = action_dof × chunk_size (e.g., 7×10=70)
             l = config.language
+            num_tokens = config.action_dof * chunk_size
             single_token = self._run_decode(
                 model_name=l["model_name"],
                 system=system,
@@ -359,7 +361,28 @@ class VLAPerfEngine:
                 num_devices=num_devices,
             )
             return ComponentResult(
-                time_ms=single_token.time_ms * chunk_size,
+                time_ms=single_token.time_ms * num_tokens,
+                boundness=single_token.boundness,
+                op_intensity=single_token.op_intensity,
+                weights_mb=single_token.weights_mb,
+                kv_cache_mb=single_token.kv_cache_mb,
+            )
+
+        elif action_type == "ar_fast":
+            # FAST AR: DCT + BPE compressed tokens, ~5x fewer than naive
+            l = config.language
+            compression = config.action.get("compression_ratio", 5)
+            naive_tokens = config.action_dof * chunk_size
+            fast_tokens = max(1, int(naive_tokens / compression))
+            single_token = self._run_decode(
+                model_name=l["model_name"],
+                system=system,
+                input_tokens=config.vlm_sequence_length,
+                output_tokens=1,
+                num_devices=num_devices,
+            )
+            return ComponentResult(
+                time_ms=single_token.time_ms * fast_tokens,
                 boundness=single_token.boundness,
                 op_intensity=single_token.op_intensity,
                 weights_mb=single_token.weights_mb,

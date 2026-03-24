@@ -2,250 +2,238 @@
 
 ## 1. Overview
 
-VLA-Perf++ is an analytical roofline benchmark for Vision-Language-Action (VLA) models.
-It evaluates **64 VLA configurations** across 3 component axes:
+VLA-Perf++ is an analytical roofline benchmark for Vision-Language-Action models.
+It evaluates **80 VLA configurations** across 3 component axes:
 
 - **Vision Encoder (V)**: SigLIP2-B (86M), SigLIP2-L (307M), SigLIP2-So (400M)
 - **Language Backbone (L)**: Qwen2.5-0.5B, Qwen2.5-1.5B, Qwen2.5-3B
-- **Action Head (A)**: 4 architectures × 3 sizes = FM/Diff/AR/MLP
+- **Action Head (A)**: 6 topologies — Cascade / SharedAttn / CrossAttn / AR-Naive / AR-FAST / Regression
 
-The project extends NVIDIA's VLA-Perf and GenZ LLM Analyzer to answer 7 research questions
-about VLA architecture design, component scaling, and deployment trade-offs.
+Built on NVIDIA VLA-Perf and GenZ LLM Analyzer.
 
 ## 2. System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  VLA-Scaling (this project)                                        │
-│                                                                     │
-│  ┌──────────────┐   ┌──────────────┐   ┌──────────────────────┐    │
-│  │  configs.py   │──>│  engine.py   │──>│  results/*.csv       │    │
-│  │  64 VLAConfig │   │ VLAPerfEngine│   │  per-component data  │    │
-│  └──────────────┘   └──────┬───────┘   └──────────────────────┘    │
-│                            │                                        │
-│  ┌──────────────┐          │           ┌──────────────────────┐    │
-│  │  network.py   │          │           │  scripts/plot/*.py   │    │
-│  │  8 scenarios  │          │           │  5 plot scripts      │    │
-│  └──────────────┘          │           └──────────────────────┘    │
-├────────────────────────────┼────────────────────────────────────────┤
-│  VLA-Perf / GenZ (NVIDIA)  │                                        │
-│                            ▼                                        │
-│  ┌──────────────────────────────────────────────────────────┐      │
-│  │  GenZ LLM Analyzer (installed via pip install -e .)       │      │
-│  │                                                           │      │
-│  │  prefill_moddeling()    ── Vision Encoder, VLM Backbone   │      │
-│  │  decode_moddeling()     ── AR action head                 │      │
-│  │  parallel_decode_modeling() ── FM/Diff action heads       │      │
-│  │                                                           │      │
-│  │  vla_models.py   ── Model configs (architecture specs)    │      │
-│  │  system_configs.py ── Hardware specs (FLOPS, BW, memory)  │      │
-│  └──────────────────────────────────────────────────────────┘      │
-└─────────────────────────────────────────────────────────────────────┘
+VLA-Scaling
+├── vla_bench/
+│   ├── configs.py ─── 80 VLAConfig (3 phases, 11 groups)
+│   │                      │
+│   ├── engine.py ─── VLAPerfEngine
+│   │                   ├── evaluate_vision()   → prefill_moddeling()
+│   │                   ├── evaluate_vlm()      → prefill_moddeling()
+│   │                   ├── evaluate_action()   → depends on topology:
+│   │                   │     cascade_denoise    → parallel_decode × N steps
+│   │                   │     shared_attn_denoise→ parallel_decode × N (on VLM)
+│   │                   │     cross_attn_denoise → parallel_decode × N steps
+│   │                   │     ar_naive           → decode × (dof × chunk)
+│   │                   │     ar_fast            → decode × (dof × chunk / 5)
+│   │                   │     regression         → prefill × 1 token
+│   │                   └── evaluate_e2e()      → V + L + A
+│   │
+│   └── network.py ─── 8 deployment scenarios
+│
+├── scripts/
+│   ├── run_benchmark.py ─── CLI entry point
+│   ├── run_scaling.py ─── Per-question experiments (Q1-Q7)
+│   └── plot/
+│       └── plot_comparison.py ─── 6 controlled-variable figures
+│
+└── GenZ (../vla-perf/genz, installed via pip install -e .)
+    ├── vla_models.py ── Model configs (Qwen2.5, denoise experts, MLP heads)
+    ├── system_configs.py ── Hardware specs (25+ platforms)
+    └── LLM_inference/ ── prefill / decode / parallel_decode modeling
 ```
 
-## 3. VLA Inference Pipeline Modeling
-
-A VLA model processes visual input and language instructions to produce robot actions.
-The inference pipeline is modeled as 3 sequential stages:
+## 3. VLA Inference Pipeline
 
 ```
-Camera Image(s)  ─→  [Vision Encoder]  ─→  Visual Tokens
-                         (prefill)            │
-Language Prompt  ─→  ─────────────────────────┤
-                                              ▼
-                     [Language Backbone]  ─→  KV Cache + Hidden States
-                         (prefill)            │
-                                              ▼
-                     [Action Head]       ─→  Action Chunk
-                     (varies by type)      (joint positions × T steps)
+Camera Image(s) ──→ [Vision Encoder] ──→ Visual Tokens
+                        (prefill)           │
+Language Prompt ──→ ───────────────────────┤
+                                            ▼
+                    [Language Backbone] ──→ KV Cache + Hidden States
+                        (prefill)           │
+                                            ▼
+                    [Action Head]       ──→ Action Chunk
+                    (topology-dependent)    (dof × chunk_size values)
 ```
 
-### 3.1 Action Head Modeling
+## 4. The 6 Action Head Topologies
 
-The 4 action head types map to different GenZ inference modes:
+### 4.1 Classification Rationale
 
-| Type | GenZ API | Inference Pattern | Latency Formula |
-|------|----------|-------------------|-----------------|
-| **FM** (Flow Matching) | `parallel_decode_modeling()` | All action tokens decoded in parallel per step | `per_step × N_steps` |
-| **Diff** (Diffusion) | `parallel_decode_modeling()` | Same as FM (different training, same arch) | `per_step × N_steps` |
-| **AR** (Autoregressive) | `decode_moddeling()` | One action token at a time, sequential | `per_token × chunk_size` |
-| **MLP** (Regression) | `prefill_moddeling()` | Single forward pass through shallow model | `1 × prefill_time` |
+Previously, VLA action heads were classified by generation strategy (Flow Matching vs Diffusion vs AR vs MLP). This is wrong for latency analysis because:
 
-**Key properties:**
-- FM/Diff: **constant** in chunk_size (parallel decode), **linear** in denoising steps
-- AR: **linear** in chunk_size (sequential generation), no denoising steps
-- MLP: **negligible** latency (<0.5ms on any GPU), no iteration
+- **FM and Diffusion have identical latency** — same DiT architecture, only training loss differs
+- **The connection topology is what determines latency** — how the action expert receives VLM information
 
-### 3.2 Roofline Analysis
+Our classification is based on **how the action head connects to the VLM backbone**:
 
-Each pipeline stage is evaluated through GenZ's roofline model:
+### 4.2 Topology Details
+
+#### Type 1: Cascade Denoise
+```
+VLM ──prefill──→ [KV Cache] ──cross-attn──→ [DiT] ──×N steps──→ Actions
+                              (sequential)
+```
+- **Representatives:** GR00T N1, CogACT, DexVLA
+- **GenZ modeling:** `parallel_decode_modeling(DiT, input=VLM_seq, output=chunk)` × N steps
+- **Latency:** VLM prefill + DiT_per_step × N_steps
+- **Key property:** DiT size directly affects action latency
+
+#### Type 2: SharedAttn Denoise
+```
+VLM + Action tokens ──shared self-attn──→ [VLM layers] ──×N steps──→ Actions
+                      (KV cache reused)
+```
+- **Representatives:** pi0, ForceVLA, OneTwoVLA
+- **GenZ modeling:** `parallel_decode_modeling(VLM, input=VLM_seq, output=chunk)` × N steps
+- **Latency:** VLM prefill + VLM_per_step × N_steps
+- **Key property:** Action latency scales with VLM size, NOT with expert config size. The expert model config is ignored — we use the VLM backbone itself for denoising.
+
+#### Type 3: CrossAttn Denoise
+```
+VLM ──prefill──→ [Features] ──cross-attn──→ [Lightweight DiT] ──×N steps──→ Actions
+                  (cached)      (interleaved SA+CA blocks)
+```
+- **Representatives:** SmolVLA, GR-3
+- **GenZ modeling:** same as Cascade (analytically equivalent at the roofline level)
+- **Latency:** VLM prefill + DiT_per_step × N_steps
+- **Key property:** Same analytical cost as Cascade. Real-world difference is in kernel fusion and the interleaved SA+CA block pattern.
+
+#### Type 4a: AR-Naive
+```
+VLM ──prefill──→ [KV Cache] ──decode──→ token₁ ──→ token₂ ──→ ... ──→ tokenₙ
+                              (one by one, n = dof × chunk_size)
+```
+- **Representatives:** OpenVLA, RT-2
+- **GenZ modeling:** `decode_moddeling(VLM)` × (action_dof × chunk_size)
+- **Latency:** VLM prefill + per_token_decode × dof × chunk_size
+- **Key property:** Linear in BOTH dof and chunk_size. With 7 DoF and chunk=10, generates 70 tokens.
+
+#### Type 4b: AR-FAST
+```
+Action chunk ──DCT──→ freq coefficients ──BPE──→ compressed tokens (÷5)
+VLM ──prefill──→ [KV Cache] ──decode──→ token₁ ──→ ... ──→ tokenₖ  (k ≈ n/5)
+```
+- **Representatives:** pi0-FAST
+- **GenZ modeling:** `decode_moddeling(VLM)` × ceil(action_dof × chunk_size / compression_ratio)
+- **Latency:** VLM prefill + per_token_decode × (dof × chunk / 5)
+- **Key property:** ~5x fewer tokens than naive AR due to DCT frequency-domain compression.
+
+#### Type 5: Direct Regression
+```
+VLM ──prefill──→ hidden[<ACT>] ──MLP──→ continuous actions (single pass)
+```
+- **Representatives:** OpenVLA-OFT, BridgeVLA, VOTE
+- **GenZ modeling:** `prefill_moddeling(MLP_head, input=1_token)`
+- **Latency:** VLM prefill + MLP_forward (negligible)
+- **Key property:** Fastest possible. Action head contributes <1% of E2E latency.
+
+### 4.3 Latency Comparison Summary
 
 ```
-                                  ┌──── Compute Bound ────┐
-                                  │  (large batch, large   │
-Performance                       │   sequence, compute-   │
-(GFLOPS)                          │   intensive ops)       │
-    ▲           ╱─────────────────┤                        │
-    │         ╱                   └────────────────────────┘
-    │       ╱ ← Ridge Point
-    │     ╱
-    │   ╱  ← Memory Bound
-    │ ╱     (small batch, KV cache reads, weight-dominated)
-    └──────────────────────────────────────────▶
-           Operational Intensity (FLOP/Byte)
+                    Slowest ←──────────────────────────────→ Fastest
+On Edge (Orin):
+  AR-Naive ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  864ms
+  AR-FAST  ▓▓▓▓▓▓▓▓                                192ms
+  SharedAtn▓▓▓▓▓▓▓                                 153ms
+  Cascade-L▓▓▓                                      71ms
+  Cascade-M▓▓                                       46ms
+  Cascade-S▓▓                                       29ms
+  Regression▓                                       25ms
+
+On Server (A800):
+  AR-Naive ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓        87ms
+  AR-FAST  ▓▓▓▓▓▓                                  20ms
+  SharedAtn▓▓▓▓▓                                   16ms
+  Cascade-L▓▓                                       8ms
+  Cascade-M▓▓                                       5ms
+  Cascade-S▓                                        4ms
+  Regression▓                                       3ms
 ```
 
-For each component, GenZ computes per-layer:
-1. **Compute time** = Total FLOPs / Hardware peak FLOPS
-2. **Memory time** = Data moved / Memory bandwidth
-3. **Communication time** = Collective data / Interconnect bandwidth (for TP/PP)
-4. **Layer time** = max(compute, memory, communication)
-5. **Boundness** = which of the 3 dominates
+## 5. Configuration Registry
 
-## 4. Configuration Registry Design
-
-### 4.1 The 64-Config Matrix
-
-Organized into 3 phases and 13 groups, each answering a specific research question:
-
-```
-Phase P0 (40 configs) → Q1-Q4
-├── Group A (9):  3×3 V×L grid × FM-M         → Q2 (optimal allocation), Q3 (bottleneck)
-├── Group B (9):  V-Scaling × {Diff,AR,MLP}    → Q1 (V scaling efficiency)
-├── Group C (6):  L-Scaling × {Diff,AR,MLP}    → Q1 (L scaling efficiency)
-├── Group D (6):  A-Scaling × {FM,Diff,MLP}    → Q4 (action architecture vs size)
-├── Group E (6):  Corner VLMs × {Diff,AR,MLP}  → Q4 (generalization)
-└── Group F (4):  FM {S,L} × Corner VLMs       → Q4 (FM size scaling)
-
-Phase P1 (12 configs) → Q5
-├── Group G (4):  FM-M chunk sweep {1,5,25,50}
-├── Group H (3):  FM-M steps sweep {5,25,50}
-├── Group I (3):  AR chunk sweep {1,5,25}
-└── Group J (2):  MLP-S on corner VLMs
-
-Phase P2 (12 configs) → Q5-Q7 supplementary
-├── Group K (4):  Chunk generalization on VLM-1/9
-├── Group L (4):  Steps generalization on VLM-1/9
-└── Group M (4):  Diff S/L on corner VLMs
-```
-
-### 4.2 VLM Matrix
-
-The 9 VLM backbones form a 3×3 grid used across multiple experiments:
+### 5.1 VLM Matrix (3×3)
 
 ```
               Qwen2.5-0.5B   Qwen2.5-1.5B   Qwen2.5-3B
-             ┌─────────────┬──────────────┬─────────────┐
-SigLIP2-B    │  VLM-① 0.6B │  VLM-② 1.6B │  VLM-③ 3.1B│
-             ├─────────────┼──────────────┼─────────────┤
-SigLIP2-L    │  VLM-④ 0.8B │  VLM-⑤ 1.8B │  VLM-⑥ 3.3B│
-             │             │  ★ baseline  │             │
-             ├─────────────┼──────────────┼─────────────┤
-SigLIP2-So   │  VLM-⑦ 0.9B │  VLM-⑧ 1.9B │  VLM-⑨ 3.4B│
-             └─────────────┴──────────────┴─────────────┘
+SigLIP2-B     VLM-1 (0.6B)   VLM-2 (1.6B)   VLM-3 (3.1B)
+SigLIP2-L     VLM-4 (0.8B)   VLM-5 (1.8B)*  VLM-6 (3.3B)
+SigLIP2-So    VLM-7 (0.9B)   VLM-8 (1.9B)   VLM-9 (3.4B)
+
+* VLM-5 is the baseline for controlled experiments
 ```
 
-## 5. Hardware and Deployment
-
-### 5.1 Target Platforms
-
-| Platform | Type | Memory | Compute (BF16) | Mem BW |
-|----------|------|--------|-----------------|--------|
-| Jetson AGX Orin 64GB | Edge | 64GB shared | ~138 TFLOPS | 204 GB/s |
-| A800 80GB | Server | 80GB HBM2e | 312 TFLOPS | 2039 GB/s |
-
-### 5.2 Deployment Scenarios
+### 5.2 Experiment Groups (80 configs)
 
 ```
-Scenario 1: On-Device (all on Orin)
-  Robot ──[V]──[L]──[A]──→ Actions
+Phase P0 (55 configs) → Q1-Q4
+├── A (9):  3×3 V×L grid × Cascade-M
+├── B (15): V-Scaling × {SharedAttn, CrossAttn, AR-Naive, AR-FAST, Regress}
+├── C (10): L-Scaling × {SharedAttn, CrossAttn, AR-Naive, AR-FAST, Regress}
+├── D (9):  Size scaling S/M/L × {Cascade, SharedAttn, Regress}
+└── E (12): Corner VLMs × all 6 topologies
 
-Scenario 2: Full Offload (all on server)
-  Robot ──image──→ [WiFi/Eth] ──→ Server ──[V]──[L]──[A]──→ [WiFi/Eth] ──action──→ Robot
+Phase P1 (13 configs) → Q5
+├── G (4):  Cascade chunk sweep {1, 5, 25, 50}
+├── H (3):  Cascade steps sweep {5, 25, 50}
+└── I (6):  AR-Naive vs AR-FAST chunk sweep {1, 10, 50}
 
-Scenario 3: Split Inference (vision on edge, VLM+action on server)
-  Robot ──[V]──features──→ [WiFi/Eth] ──→ Server ──[L]──[A]──→ [WiFi/Eth] ──action──→ Robot
+Phase P2 (12 configs) → Q5-Q7
+├── K (4):  Chunk generalization on VLM-1/9
+├── L (4):  Steps generalization on VLM-1/9
+└── M (4):  CrossAttn S/L on corner VLMs
 ```
 
-Network overhead is modeled for WiFi 5/6/7, 1G/10G/25G/100G Ethernet, and cloud links.
+## 6. Model Configuration Notes
 
-### 5.3 Parallelism
+### vocab_size=0 for VLA Backbones
 
-For multi-device setups, GenZ explores all valid (TP, PP) combinations:
-- **Tensor Parallel (TP)**: Splits layers across devices (requires NVLink/ICN)
-- **Pipeline Parallel (PP)**: Distributes layers sequentially across devices
-- Only TP > 1 is allowed when the system has ICN > 0 (interconnect bandwidth)
-- The engine automatically selects the best (TP, PP) combination per component
+VLA models use the LLM as a backbone without the LM head (action heads handle output). Setting `vocab_size=0` removes the output projection from latency modeling. Without this, VLM latency is overestimated by 17-24%.
 
-## 6. Model Configuration Design
+### Model Name Resolution
 
-### 6.1 Why `vocab_size=0` for VLA Backbones
+Language model names MUST use `vla/` prefix (e.g., `vla/qwen2.5-1.5b`) to avoid resolving to GenZ's pre-existing configs in `alibaba.py` which include vocab embeddings.
 
-Standard LLM configs include embedding and LM head parameters (`vocab_size × hidden_size`).
-VLA models use the LLM as a backbone:
-- **Input**: Visual tokens (from vision encoder projector) + language tokens
-- **Output**: Hidden states → passed to action head (not to LM head)
+### Denoise Expert Unification
 
-Setting `vocab_size=0` removes the LM head from latency modeling. Without this,
-VLM latency is overestimated by 17-24% due to a phantom output projection.
-
-### 6.2 Action Head Architecture Specs
-
-| Config | Layers | Hidden | Intermediate | Heads | KV Heads | ~Params |
-|--------|--------|--------|--------------|-------|----------|---------|
-| FM/Diff-S | 8 | 640 | 2560 | 8 | 2 | 46M |
-| FM/Diff-M | 14 | 1024 | 4096 | 8 | 2 | 209M |
-| FM/Diff-L | 19 | 1280 | 5120 | 16 | 4 | 452M |
-| MLP-S | 2 enc | 512 | 2048 | 8 | 8 | ~10M |
-| MLP-M | 3 enc | 768 | 3072 | 12 | 12 | ~30M |
-| MLP-L | 4 enc | 1024 | 4096 | 16 | 16 | ~80M |
-| AR | (reuses LLM backbone) | — | — | — | — | 0 extra |
-
-FM and Diff share identical transformer architectures. The difference is in training
-(continuous flow matching vs discrete DDPM schedule), not inference computation.
+FM and Diffusion action experts are defined as a single `denoise-expert-{s,m,l}` config set. Legacy aliases (`fm-action-expert-*`, `diff-action-expert-*`) point to the same configs for backward compatibility.
 
 ## 7. Output Schema
 
-The benchmark produces a CSV with one row per (config, hardware) combination.
-Key columns:
+One row per (config, hardware) combination:
 
 ```
-config_id, config_name, group, phase,
-vision_key, language_key, action_key, action_type,
-hardware, num_devices, bits, batch_size,
-chunk_size, denoising_steps, num_frames, vision_tokens, vlm_seq_len,
+# Identifiers
+config_id, config_name, group, phase, vision_key, language_key, action_key, action_type
 
-# Per-component breakdown (ms)
-vision_time_ms, vlm_time_ms, action_time_ms, e2e_time_ms,
+# Hardware
+hardware, num_devices, bits, batch_size
 
-# Roofline classification
-vision_boundness, vlm_boundness, action_boundness,
-vision_op_intensity, vlm_op_intensity, action_op_intensity,
+# Parameters
+chunk_size, denoising_steps, num_frames, vision_tokens, vlm_seq_len
 
-# Memory footprint (MB)
-vision_weights_mb, vlm_weights_mb, action_weights_mb, vlm_kv_cache_mb, total_memory_mb,
+# Per-component latency (ms)
+vision_time_ms, vlm_time_ms, action_time_ms, e2e_time_ms
+
+# Roofline
+vision_boundness, vlm_boundness, action_boundness  (Comp/Mem/Comm)
+vision_op_intensity, vlm_op_intensity, action_op_intensity  (FLOP/Byte)
+
+# Memory
+vision_weights_mb, vlm_weights_mb, action_weights_mb, vlm_kv_cache_mb, total_memory_mb
 
 # Derived
-e2e_hz,    # 1000 / e2e_time_ms
-ttfa_ms,   # Time to first action = vision + vlm
+e2e_hz (1000/e2e_time_ms), ttfa_ms (vision+vlm)
 ```
 
 ## 8. Known Limitations
 
-1. **Analytical, not measured**: Latency is estimated via roofline model, not measured on real hardware.
-   Actual latency depends on kernel implementations, memory fragmentation, scheduling overhead, etc.
-   GenZ typically achieves ~80% accuracy vs real measurements (MAPE ~20%).
-
-2. **Projector not modeled**: The vision-to-LLM projector (typically a 2-layer MLP mapping
-   vision features to LLM hidden space) is not explicitly modeled. Its latency is negligible
-   (<0.1ms) compared to vision/VLM/action components.
-
-3. **MLP heads modeled as transformers**: GenZ's roofline model is designed for transformer
-   architectures. MLP action heads are approximated as shallow encoder-only transformers,
-   which slightly overestimates their latency (adds unnecessary attention computation).
-
-4. **No memory fragmentation**: The memory fit check uses ideal packing. Real systems may
-   have fragmentation, activation memory, and optimizer states that reduce available memory.
-
-5. **Single-batch focus**: The benchmark defaults to batch_size=1 (real-time robotics).
-   Throughput-oriented scenarios (batch>1) are supported but not the primary focus.
+1. **Analytical model, not measured.** GenZ roofline accuracy is ~80% (MAPE ~20%). Real latency depends on kernel implementations and scheduling.
+2. **Cascade = CrossAttn analytically.** Both use the same DiT with cross-attention. Real-world differences from interleaved block patterns and kernel fusion are not captured.
+3. **SharedAttn ignores expert config size.** By design — it uses the VLM backbone, not a separate expert. The S/M/L suffix is kept for API consistency but has no effect.
+4. **AR-FAST compression ratio is approximate.** Fixed at 5x; actual ratio depends on action smoothness and BPE vocabulary.
+5. **Projector not modeled.** Vision-to-LLM projector (<0.1ms) is omitted.
+6. **Single-batch focus.** Default batch_size=1 for real-time robotics.
