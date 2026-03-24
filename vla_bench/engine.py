@@ -1,14 +1,18 @@
 """
 VLA Performance Evaluation Engine
 
-Wraps GenZ's roofline analysis to evaluate all 4 action head types:
-  - Flow Matching (FM): parallel_decode × N denoising steps
-  - Diffusion (Diff): parallel_decode × N denoising steps
-  - Autoregressive (AR): decode, sequential token generation
-  - MLP: prefill with 1 token through shallow model
+Wraps GenZ's roofline analysis for 6 action head topologies:
+  - Cascade Denoise:   parallel_decode(DiT) × N steps
+  - SharedAttn Denoise: parallel_decode(action expert) × N steps
+      Action expert's transformer layers, cross-attn to VLM KV cache.
+      Attention heads shared with VLM, but FFN weights are separate.
+  - CrossAttn Denoise: parallel_decode(DiT) × N steps
+  - AR-Naive:  decode(VLM) × (dof × chunk_size)
+  - AR-FAST:   decode(VLM) × (dof × chunk_size / 5)
+  - Regression: prefill(MLP) × 1 token
 
 Outputs per-component latency breakdown:
-  Vision Encoder | Projector | Language Backbone | Action Head
+  Vision Encoder | Language Backbone | Action Head
 """
 
 import sys
@@ -308,13 +312,16 @@ class VLAPerfEngine:
             )
 
         elif action_type == "shared_attn_denoise":
-            # SharedAttn (pi0-style): action tokens enter VLM's self-attention
-            # KV cache from VLM observation tokens is reused across denoising steps
-            # Per step: only action tokens are recomputed (parallel decode on VLM)
-            # Use VLM backbone model (not separate DiT) for the shared attention pass
-            l = config.language
+            # SharedAttn (pi0-style): action tokens share VLM's self-attention
+            # layers but have SEPARATE FFN weights (action expert's FFN).
+            # KV cache from VLM observation tokens is reused across denoising steps.
+            # Per step: action tokens are processed through the action expert's
+            # transformer layers (not VLM's), cross-attending to VLM's KV cache.
+            #
+            # Key: use action expert model (determines FFN size and layer count),
+            # NOT the VLM model. The VLM only contributes the KV cache context.
             single_step = self._run_parallel_decode(
-                model_name=l["model_name"],
+                model_name=a["model_name"],
                 system=system,
                 input_tokens=config.vlm_sequence_length,
                 output_tokens_parallel=chunk_size,
